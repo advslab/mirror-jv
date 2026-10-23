@@ -1,0 +1,90 @@
+name: feeds sync
+
+# Copies the JVN iPedia feed files of both languages (en, ja) into one rolling
+# release (tag `feeds`): each language's checksum.txt manifest lists the files
+# and their sha256; a file that changed or is new is downloaded, checked and
+# uploaded as <lang>_<filename>, a file no longer listed is removed, and the
+# manifest itself goes up as manifest-<lang>.json once every file it lists is
+# in step; state.json last.
+#
+# Chaining: when a run ends at its budget with files left and `chain` is above
+# 0, it dispatches one follow-up run of this workflow with chain - 1. A source
+# that is down (JVN's maintenance) ends the run cleanly with no follow-up; the
+# schedule tries again, unless `archive_ts` names a Wayback Machine capture:
+# then the manifests and file bodies are read from the capture nearest it,
+# verified exactly as from the origin (`archive_force` reads from it even
+# while the origin answers).
+on:
+  schedule:
+    - cron: "40 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "how many follow-up runs may still follow this one"
+        required: false
+        default: "3"
+      budget:
+        description: "minutes the run may take"
+        required: false
+        default: "330"
+      pace:
+        description: "seconds between downloads"
+        required: false
+        default: "1"
+      archive_ts:
+        description: "Wayback Machine capture to copy from while the origin is down (e.g. 20260917)"
+        required: false
+        default: ""
+      archive_force:
+        description: "true copies from archive_ts even while the origin answers"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: feeds-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: sync
+        id: sync
+        env:
+          BUDGET: ${{ inputs.budget || '330' }}
+          PACE: ${{ inputs.pace || '1' }}
+          CHAIN: ${{ inputs.chain || '3' }}
+          ARCHIVE_TS: ${{ inputs.archive_ts }}
+          ARCHIVE_FORCE: ${{ inputs.archive_force || 'false' }}
+          RELEASE_TAG: feeds
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x bin/feeds-sync
+          sha256sum bin/feeds-sync
+          bin/feeds-sync
+          more=$(sed -n 's/^more=//p' "$GITHUB_OUTPUT" | tail -n 1)
+          if [ "$more" != true ] || [ "$CHAIN" -le 0 ]; then
+            echo "chain: no follow-up run requested (more=${more:-unset}, chain=$CHAIN)"
+          fi
+      - name: chain
+        if: ${{ success() && steps.sync.outputs.more == 'true' && fromJSON(inputs.chain || '3') > 0 }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAIN: ${{ inputs.chain || '3' }}
+          BUDGET: ${{ inputs.budget || '330' }}
+          PACE: ${{ inputs.pace || '1' }}
+          ARCHIVE_TS: ${{ inputs.archive_ts }}
+          ARCHIVE_FORCE: ${{ inputs.archive_force || 'false' }}
+        run: |
+          left=$((CHAIN - 1))
+          gh workflow run feeds-sync.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f chain="$left" -f budget="$BUDGET" -f pace="$PACE" \
+            -f archive_ts="$ARCHIVE_TS" -f archive_force="$ARCHIVE_FORCE"
+          echo "chain: follow-up run requested; $left more may follow it"
