@@ -1,6 +1,6 @@
 name: feeds sync
 
-# Copies the JVN iPedia feed files of both languages (en, ja) into one rolling
+# Copies the source's feed files of both languages (en, ja) into one rolling
 # release (tag `feeds`): each language's checksum.txt manifest lists the files
 # and their sha256; a file that changed or is new is downloaded, checked and
 # uploaded as <lang>_<filename>, a file no longer listed is removed, and the
@@ -9,7 +9,7 @@ name: feeds sync
 #
 # Chaining: when a run ends at its budget with files left and `chain` is above
 # 0, it dispatches one follow-up run of this workflow with chain - 1. A source
-# that is down (JVN's maintenance) ends the run cleanly with no follow-up; the
+# that is down (maintenance) ends the run cleanly with no follow-up; the
 # schedule tries again, unless `archive_ts` names a Wayback Machine capture:
 # then the manifests and file bodies are read from the capture nearest it,
 # verified exactly as from the origin (`archive_force` reads from it even
@@ -40,6 +40,9 @@ on:
         required: false
         default: "false"
 
+# Set the repository secret SOURCE_BASE to the source's root with its trailing
+# slash (Settings → Secrets and variables → Actions → Secrets); it is masked in
+# every log.
 permissions:
   contents: write
   actions: write
@@ -54,9 +57,15 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
+      - name: refuse without the source secret
+        env:
+          BASE: ${{ secrets.SOURCE_BASE }}
+        run: |
+          if [ -z "$BASE" ]; then echo "::error::repository secret SOURCE_BASE is not set"; exit 1; fi
       - name: sync
         id: sync
         env:
+          BASE: ${{ secrets.SOURCE_BASE }}
           BUDGET: ${{ inputs.budget || '330' }}
           PACE: ${{ inputs.pace || '1' }}
           CHAIN: ${{ inputs.chain || '3' }}
